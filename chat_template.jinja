@@ -1,0 +1,34 @@
+{%- set template_version = "qwen3.8-flash-next-sharp-v22.5.2" %}
+{%- set _tool_format = tool_call_format if tool_call_format is defined else 'xml' %}
+{%- set image_count = namespace(value=0) %}
+{%- set video_count = namespace(value=0) %}
+{%- set add_vision_id = add_vision_id if add_vision_id is defined else false %}
+{%- set enable_thinking = enable_thinking if enable_thinking is defined else true %}
+{%- set auto_disable_thinking_with_tools = auto_disable_thinking_with_tools if auto_disable_thinking_with_tools is defined else false %}
+{%- if preserve_reasoning is defined and preserve_reasoning is not none %}
+    {%- set _preserve_thinking = preserve_reasoning %}
+{%- elif preserve_thinking is defined and preserve_thinking is not none %}
+    {%- set _preserve_thinking = preserve_thinking %}
+{%- else %}
+    {%- set _preserve_thinking = true %}
+{%- endif %}
+{%- set max_tool_arg_chars = max_tool_arg_chars if max_tool_arg_chars is defined else 0 %}
+{%- set max_tool_response_chars = max_tool_response_chars if max_tool_response_chars is defined else 0 %}
+{%- set _default_reasoning_effort = 'medium' %}
+{%- set _has_tools = (tools is defined and tools and tools is iterable and tools is not mapping) %}
+{%- set _effort_raw = (reasoning_effort | string | lower) if reasoning_effort is defined and reasoning_effort is not none else _default_reasoning_effort %}
+{%- set _initial_thinking = enable_thinking %}
+{%- if _effort_raw in ('none', 'off') %}
+    {%- set _initial_thinking = false %}
+    {%- set _initial_effort = 'medium' %}
+{%- elif _effort_raw in ('minimal', 'low') %}
+    {%- set _initial_effort = 'low' %}
+{%- elif _effort_raw in ('high', 'xhigh', 'max', 'ultracode', 'extreme') %}
+    {%- set _initial_effort = 'xhigh' %}
+{%- else %}
+    {%- set _initial_effort = 'medium' %}
+{%- endif %}
+{%- set ns_state = namespace(thinking=_initial_thinking, effort=_initial_effort) %}
+{%- if auto_disable_thinking_with_tools and _has_tools %}
+    {%- set ns_state.thinking = false %}
+{%- endif %}
