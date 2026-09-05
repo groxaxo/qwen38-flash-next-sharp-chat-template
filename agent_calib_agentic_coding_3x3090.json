@@ -1,1 +1,42 @@
-placeholder
+{
+  "id": "flashnext-agentic-coding-calib-3x3090",
+  "title": "High-quality agentic-coding imatrix on 128GB DDR4 + 3x3090",
+  "version": "1.0.0",
+  "replaces": "wiki.train.raw / calib/calib.txt in the BF16 and FP8 playbooks",
+  "hardware": {
+    "ram_gb": 128,
+    "gpus": "CUDA_VISIBLE_DEVICES=0,1,2 three RTX 3090 only",
+    "leave_out": "3060s"
+  },
+  "corpus": {
+    "script": "build_agentic_coding_calib.py",
+    "out": "calib/calib_agentic_coding.txt",
+    "approx_tokens": 2000000,
+    "chunks_at_2048": 800,
+    "mix": {
+      "swe_bench_verified_issue_patch_tests": "40%",
+      "openhands_trajectories_rewritten_to_flashnext_xml_tools": "25%",
+      "eaddario_code_small_multilingual": "20%",
+      "eaddario_tools_small": "10%",
+      "atomicchat_agentic_if_available": "5%"
+    }
+  },
+  "steps": [
+    {"id": 0, "name": "deps", "cmd": "python3 -m pip install -U datasets huggingface_hub"},
+    {"id": 1, "name": "build_corpus", "cmd": "python3 build_agentic_coding_calib.py -o calib/calib_agentic_coding.txt --max-tokens 2000000 --swe-n 400 --oh-n 250"},
+    {"id": 2, "name": "imatrix_agentic_3x3090", "gpu": true, "cmd": "CUDA_VISIBLE_DEVICES=0,1,2 CUDA_DEVICE_ORDER=PCI_BUS_ID ./llama.cpp/build/bin/llama-imatrix -m ./out/Qwen38FN-Unc-BF16-unsloth-UD-IQ4_XS.master.q8_0.gguf -f ./calib/calib_agentic_coding.txt -c 2048 --chunks 800 --parse-special --no-ppl --chunk 512 --output-tensor ./out/Qwen38FN-Unc-BF16-unsloth-UD-IQ4_XS.imatrix.gguf -ngl 99 -sm layer -ts 1,1,1 --override-tensor per_layer_token_embd=CPU --flash-attn on -t 12 -tb 16 -b 512 -ub 128"}
+  ],
+  "imatrix_oom_fallback": [
+    "-c 1024 --chunks 800 -b 256 -ub 64",
+    "--override-tensor ffn_gate_exps=CPU --override-tensor ffn_up_exps=CPU --override-tensor ffn_down_exps=CPU",
+    "CUDA_VISIBLE_DEVICES=0,1 -ts 1,1",
+    "rebuild corpus with --max-tokens 1000000"
+  ],
+  "agent_rules": [
+    "Never add 3060s.",
+    "Never skip --parse-special.",
+    "Never use -c above 2048 on this 128GB box with a Q8 master.",
+    "If SWE-bench or OpenHands 401, keep going — eaddario still beats wiki.",
+    "Do not lower QUANT because imatrix OOM'd. Shrink ctx/batch first."
+  ]
+}
