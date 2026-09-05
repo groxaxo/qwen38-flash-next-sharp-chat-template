@@ -1,0 +1,62 @@
+{
+  "id": "orcarouter-bf16-unsloth-udiq4xs-3x3090",
+  "title": "Start-to-finish: BF16 uncensored -> Unsloth UD-IQ4_XS on 3x RTX 3090",
+  "version": "1.0.0",
+  "autonomy": "full",
+  "objective": "Download orcarouter/Qwen3.8-Flash-Next-Uncensored (BF16), convert to Q8_0 master, imatrix on 3x3090, apply Unsloth UD-IQ4_XS map, bake template, split 2G, verify.",
+  "src_hf": "orcarouter/Qwen3.8-Flash-Next-Uncensored",
+  "src_kind": "bf16_safetensors",
+  "src_size_gb": 336,
+  "quant_map": "UD-IQ4_XS",
+  "out_prefix": "./out/Qwen38FN-Unc-BF16-unsloth-UD-IQ4_XS",
+  "peak_free_needed_gb": 700,
+  "env": {
+    "CUDA_VISIBLE_DEVICES": "0,1,2",
+    "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+    "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True,max_split_size_mb:512",
+    "HF_HUB_ENABLE_HF_TRANSFER": "1",
+    "SRC": "orcarouter/Qwen3.8-Flash-Next-Uncensored",
+    "RECIPE": "unsloth",
+    "QUANT": "UD-IQ4_XS",
+    "LLAMA_CPP": "./llama.cpp",
+    "OUT": "./out/Qwen38FN-Unc-BF16-unsloth-UD-IQ4_XS",
+    "OUTTYPE": "q8_0",
+    "RECOMPUTE_IMATRIX": "1",
+    "CALIB": "./calib/calib.txt"
+  },
+  "gates": [
+    "https://huggingface.co/orcarouter/Qwen3.8-Flash-Next-Uncensored",
+    "https://huggingface.co/orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF"
+  ],
+  "agent_rules": [
+    "Execute steps in order. Skip if skip_if is true.",
+    "Never add 3060s to CUDA_VISIBLE_DEVICES.",
+    "Never pass --token-embedding-type.",
+    "Do not reuse an FP8-derived Q8 master. Convert this BF16 tree.",
+    "Convert BF16 straight to Q8_0. Do not write a 350GB BF16 GGUF.",
+    "On 401/403 stop and accept the gate URLs then hf auth login.",
+    "On convert CUDA OOM retry CUDA_VISIBLE_DEVICES=0.",
+    "On imatrix OOM walk imatrix_oom_fallback.",
+    "Do not delete BF16 or Q8 master until verify succeeds."
+  ],
+  "imatrix_oom_fallback": [
+    "--override-tensor ffn_gate_exps=CPU --override-tensor ffn_up_exps=CPU --override-tensor ffn_down_exps=CPU",
+    "-b 1024 -ub 256",
+    "CUDA_VISIBLE_DEVICES=0,1 -ts 1,1",
+    "use AtomicChat imatrix.gguf"
+  ],
+  "steps": [
+    {"id": 0, "name": "clone_playbook", "gpu": false, "cmd": "git clone https://github.com/groxaxo/qwen38-flash-next-sharp-chat-template work-playbook && cp work-playbook/quantize_orcarouter_fp8.sh work-playbook/extract_gguf_tensor_map.py work-playbook/chat_template.jinja . && chmod +x quantize_orcarouter_fp8.sh extract_gguf_tensor_map.py"},
+    {"id": 1, "name": "build_llamacpp_cuda", "gpu": true, "cmd": "git clone https://github.com/ggml-org/llama.cpp llama.cpp && cmake -S llama.cpp -B llama.cpp/build -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release && cmake --build llama.cpp/build -j --target llama-quantize llama-imatrix llama-gguf-split llama-cli llama-server gguf-new-metadata"},
+    {"id": 2, "name": "pip_deps", "gpu": false, "cmd": "python3 -m pip install -U 'huggingface_hub[hf_transfer]' hf_transfer sentencepiece transformers torch gguf numpy"},
+    {"id": 10, "name": "extract_map", "gpu": false, "cmd": "MAP_ONLY=1 RECIPE=unsloth QUANT=UD-IQ4_XS LLAMA_CPP=./llama.cpp ./quantize_orcarouter_fp8.sh"},
+    {"id": 20, "name": "calib", "gpu": false, "cmd": "mkdir -p calib && curl -L --fail -o calib/wiki.train.raw https://huggingface.co/datasets/wikitext/resolve/main/wikitext-2-raw-v1/wiki.train.raw && head -c 8000000 calib/wiki.train.raw > calib/calib.txt"},
+    {"id": 30, "name": "download_bf16", "gpu": false, "cmd": "HF_HUB_ENABLE_HF_TRANSFER=1 hf download orcarouter/Qwen3.8-Flash-Next-Uncensored --local-dir ./hf-src-bf16"},
+    {"id": 40, "name": "convert_bf16_to_q8", "gpu": true, "cmd": "mkdir -p out && CUDA_VISIBLE_DEVICES=0,1,2 CUDA_DEVICE_ORDER=PCI_BUS_ID PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:512 python3 ./llama.cpp/convert_hf_to_gguf.py ./hf-src-bf16 --outfile ./out/Qwen38FN-Unc-BF16-unsloth-UD-IQ4_XS.master.q8_0.gguf --outtype q8_0"},
+    {"id": 50, "name": "imatrix_3x3090", "gpu": true, "cmd": "CUDA_VISIBLE_DEVICES=0,1,2 CUDA_DEVICE_ORDER=PCI_BUS_ID ./llama.cpp/build/bin/llama-imatrix -m ./out/Qwen38FN-Unc-BF16-unsloth-UD-IQ4_XS.master.q8_0.gguf -f ./calib/calib.txt --chunk 512 --output-tensor ./out/Qwen38FN-Unc-BF16-unsloth-UD-IQ4_XS.imatrix.gguf -ngl 99 -sm layer -ts 1,1,1 --override-tensor per_layer_token_embd=CPU --flash-attn on -t 12 -tb 20 -b 2048 -ub 512"},
+    {"id": 60, "name": "quantize_udiq4xs", "gpu": false, "cmd": "SKIP_CONVERT=1 SRC=./out/Qwen38FN-Unc-BF16-unsloth-UD-IQ4_XS.master.q8_0.gguf RECIPE=unsloth QUANT=UD-IQ4_XS MAP=./maps/UD-IQ4_XS.tensor-types IMATRIX=./out/Qwen38FN-Unc-BF16-unsloth-UD-IQ4_XS.imatrix.gguf RECOMPUTE_IMATRIX=0 LLAMA_CPP=./llama.cpp OUT=./out/Qwen38FN-Unc-BF16-unsloth-UD-IQ4_XS ./quantize_orcarouter_fp8.sh"},
+    {"id": 70, "name": "fetch_mmproj", "gpu": false, "cmd": "hf download orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF --include 'mmproj-*' --local-dir ."},
+    {"id": 90, "name": "verify", "gpu": true, "cmd": "CUDA_VISIBLE_DEVICES=0,1,2 ./llama.cpp/build/bin/llama-cli -m ./out/Qwen38FN-Unc-BF16-unsloth-UD-IQ4_XS-00001-of-*.gguf --jinja --chat-template-file ./chat_template.jinja --reasoning-format deepseek -ngl 99 -sm layer -ts 1,1,1 --override-tensor per_layer_token_embd=CPU -fit off -c 4096 -n 64 -p 'Reply with the single word: pong' --temp 0"}
+  ],
+  "serve_after": "CUDA_VISIBLE_DEVICES=0,1,2 ./llama.cpp/build/bin/llama-server -m ./out/Qwen38FN-Unc-BF16-unsloth-UD-IQ4_XS-00001-of-*.gguf --mmproj mmproj-Qwen3.8-Flash-Next-Uncensored-F16.gguf --jinja --chat-template-file ./chat_template.jinja --reasoning-format deepseek -ngl 99 -sm layer -ts 1,1,1 --override-tensor per_layer_token_embd=CPU -fit off -c 32768 --host 0.0.0.0 --port 8080 --flash-attn on -t 12 -tb 20"
+}
