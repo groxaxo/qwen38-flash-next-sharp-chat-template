@@ -1,0 +1,75 @@
+{
+  "id": "orcarouter-fp8-unsloth-udiq4xs-3x3090",
+  "title": "Quantize orcarouter/Qwen3.8-Flash-Next-Uncensored-FP8 to Unsloth UD-IQ4_XS on 3x RTX 3090",
+  "version": "1.0.0",
+  "hardware": {
+    "gpus": [
+      {"id": 0, "name": "RTX 3090", "vram_gb": 24},
+      {"id": 1, "name": "RTX 3090", "vram_gb": 24},
+      {"id": 2, "name": "RTX 3090", "vram_gb": 24}
+    ],
+    "note": "Use the three 3090s only. Leave the 3060s out.",
+    "cpu": "i7-12700KF",
+    "ram_gb": 128,
+    "expected_vram_pool_gb": 72
+  },
+  "goal": {
+    "src": "orcarouter/Qwen3.8-Flash-Next-Uncensored-FP8",
+    "recipe": "unsloth",
+    "quant_map": "UD-IQ4_XS",
+    "out_prefix": "./out/Qwen38FN-Unc-FP8-unsloth-UD-IQ4_XS"
+  },
+  "disk_budget_gb": {
+    "fp8_weights": 186,
+    "q8_master": 176,
+    "output_shards": 94,
+    "peak_free_needed": 480
+  },
+  "env": {
+    "CUDA_VISIBLE_DEVICES": "0,1,2",
+    "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+    "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True,max_split_size_mb:512",
+    "HF_HUB_ENABLE_HF_TRANSFER": "1",
+    "SRC": "orcarouter/Qwen3.8-Flash-Next-Uncensored-FP8",
+    "RECIPE": "unsloth",
+    "QUANT": "UD-IQ4_XS",
+    "LLAMA_CPP": "./llama.cpp",
+    "OUT": "./out/Qwen38FN-Unc-FP8-unsloth-UD-IQ4_XS",
+    "OUTTYPE": "q8_0",
+    "FP8_AS_Q8": "1",
+    "RECOMPUTE_IMATRIX": "1",
+    "CALIB": "./calib/calib.txt"
+  },
+  "gpu_policy": {
+    "convert_fp8": "torch CUDA, pin 0,1,2",
+    "imatrix": "MAX GPU: -ngl 99 -sm layer -ts 1,1,1 --override-tensor per_layer_token_embd=CPU",
+    "quantize": "CPU only",
+    "do_not": ["include 3060s", "pass --token-embedding-type", "start from MLX-4bit", "wire PLE to GPU at serve"]
+  },
+  "steps": [
+    {"id": 10, "name": "clone_playbook", "gpu": false, "cmd": "git clone https://github.com/groxaxo/qwen38-flash-next-sharp-chat-template && cd qwen38-flash-next-sharp-chat-template && chmod +x quantize_orcarouter_fp8.sh extract_gguf_tensor_map.py"},
+    {"id": 20, "name": "extract_unsloth_map", "gpu": false, "cmd": "MAP_ONLY=1 RECIPE=unsloth QUANT=UD-IQ4_XS ./quantize_orcarouter_fp8.sh"},
+    {"id": 30, "name": "calib_text", "gpu": false, "cmd": "mkdir -p calib && curl -L --fail -o calib/wiki.train.raw https://huggingface.co/datasets/wikitext/resolve/main/wikitext-2-raw-v1/wiki.train.raw && head -c 8000000 calib/wiki.train.raw > calib/calib.txt"},
+    {"id": 40, "name": "download_fp8", "gpu": false, "cmd": "HF_HUB_ENABLE_HF_TRANSFER=1 hf download orcarouter/Qwen3.8-Flash-Next-Uncensored-FP8 --local-dir ./hf-src-fp8"},
+    {"id": 50, "name": "convert_fp8_to_q8_master", "gpu": true, "cmd": "CUDA_VISIBLE_DEVICES=0,1,2 CUDA_DEVICE_ORDER=PCI_BUS_ID PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:512 python3 ./llama.cpp/convert_hf_to_gguf.py ./hf-src-fp8 --outfile ./out/Qwen38FN-Unc-FP8-unsloth-UD-IQ4_XS.master.q8_0.gguf --outtype q8_0 --fp8-as-q8"},
+    {"id": 60, "name": "imatrix_3x3090", "gpu": true, "cmd": "CUDA_VISIBLE_DEVICES=0,1,2 CUDA_DEVICE_ORDER=PCI_BUS_ID ./llama.cpp/build/bin/llama-imatrix -m ./out/Qwen38FN-Unc-FP8-unsloth-UD-IQ4_XS.master.q8_0.gguf -f ./calib/calib.txt --chunk 512 --output-tensor ./out/Qwen38FN-Unc-FP8-unsloth-UD-IQ4_XS.imatrix.gguf -ngl 99 -sm layer -ts 1,1,1 --override-tensor per_layer_token_embd=CPU --flash-attn on -t 12 -tb 20 -b 2048 -ub 512"},
+    {"id": 70, "name": "quantize_unsloth_map", "gpu": false, "cmd": "SKIP_CONVERT=1 SRC=./out/Qwen38FN-Unc-FP8-unsloth-UD-IQ4_XS.master.q8_0.gguf RECIPE=unsloth QUANT=UD-IQ4_XS MAP=./maps/UD-IQ4_XS.tensor-types IMATRIX=./out/Qwen38FN-Unc-FP8-unsloth-UD-IQ4_XS.imatrix.gguf RECOMPUTE_IMATRIX=0 LLAMA_CPP=./llama.cpp OUT=./out/Qwen38FN-Unc-FP8-unsloth-UD-IQ4_XS ./quantize_orcarouter_fp8.sh"},
+    {"id": 80, "name": "verify_load_3x3090", "gpu": true, "cmd": "CUDA_VISIBLE_DEVICES=0,1,2 ./llama.cpp/build/bin/llama-cli -m ./out/Qwen38FN-Unc-FP8-unsloth-UD-IQ4_XS-00001-of-*.gguf --jinja --chat-template-file ./chat_template.jinja --reasoning-format deepseek -ngl 99 -sm layer -ts 1,1,1 --override-tensor per_layer_token_embd=CPU -fit off -c 4096 -n 64 -p 'Reply with the single word: pong' --temp 0"}
+  ],
+  "imatrix_oom_fallback": [
+    "add --override-tensor ffn_gate_exps=CPU --override-tensor ffn_up_exps=CPU --override-tensor ffn_down_exps=CPU",
+    "drop -b/-ub to 1024/256",
+    "CUDA_VISIBLE_DEVICES=0,1 -ts 1,1",
+    "use AtomicChat imatrix.gguf and set RECOMPUTE_IMATRIX=0"
+  ],
+  "agent_rules": [
+    "Never add the 3060s to CUDA_VISIBLE_DEVICES.",
+    "Never pass --token-embedding-type.",
+    "Skip a step if its output already exists and size is sane.",
+    "Reuse the Q8 master from the UD-Q4_K_XL run if it already exists; only the map and OUT prefix change.",
+    "On imatrix OOM walk imatrix_oom_fallback in order.",
+    "Do not delete the Q8 master until verify exits 0.",
+    "Serve with PLE on CPU and -fit off."
+  ],
+  "serve_after": "CUDA_VISIBLE_DEVICES=0,1,2 ./llama.cpp/build/bin/llama-server -m ./out/Qwen38FN-Unc-FP8-unsloth-UD-IQ4_XS-00001-of-*.gguf --mmproj mmproj-Qwen3.8-Flash-Next-Uncensored-F16.gguf --jinja --chat-template-file ./chat_template.jinja --reasoning-format deepseek -ngl 99 -sm layer -ts 1,1,1 --override-tensor per_layer_token_embd=CPU -fit off -c 32768 --host 0.0.0.0 --port 8080 --flash-attn on -t 12 -tb 20"
+}
